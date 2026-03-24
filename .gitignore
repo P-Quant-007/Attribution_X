@@ -12,6 +12,13 @@ data/*.csv
 data/*.xlsx
 !data/.gitkeep
 
+# Raw data — too large for git
+data/cbrics/
+data/processed_trades.csv
+
+# Keep sample for tests
+!data/cbrics/sample_week.csv
+
 # IDE
 .vscode/
 .idea/

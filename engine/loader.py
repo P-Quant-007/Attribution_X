@@ -100,3 +100,24 @@ def validate_dataframe(df: pd.DataFrame) -> bool:
     assert df["ytm"].between(0, 100).all()
     assert df["date"].notna().all()
     return True
+
+def load_processed_trades(filepath: str | Path) -> pd.DataFrame:
+    """
+    Load the pre-processed CBRICS dataset (output of data/load_cbrics.py).
+    This is the fast path — data is already clean, just parse dates and types.
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"Processed file not found: {filepath}\n"
+                                f"Run: python data/load_cbrics.py first.")
+
+    df = pd.read_csv(filepath, low_memory=False)
+    df["date"] = pd.to_datetime(df["date"])
+    df["ytm"] = pd.to_numeric(df["ytm"], errors="coerce")
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+    df = df.sort_values(["date", "isin"]).reset_index(drop=True)
+
+    print(f"[loader] Loaded processed dataset: {len(df):,} trades | "
+          f"{df['isin'].nunique():,} ISINs | "
+          f"{df['date'].min().date()} to {df['date'].max().date()}")
+    return df
