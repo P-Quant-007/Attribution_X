@@ -164,3 +164,47 @@ def test_anomaly_score_norm_bounded():
     feat = make_feature_df()
     result = run_detection_pipeline(feat, contamination=0.05, save=False)
     assert result["anomaly_score_norm"].between(0, 1).all()
+
+from engine.detector import apply_persistence_filter, apply_cusum
+
+
+def test_persistence_filter_removes_isolated_anomaly():
+    """A single isolated anomaly day should not be confirmed."""
+    dates = pd.date_range("2019-01-01", periods=5, freq="B")
+    df = pd.DataFrame({
+        "isin": ["INE202E01016"] * 5,
+        "date": dates,
+        "avg_ytm": [9.0] * 5,
+        "is_anomaly": [0, 0, 1, 0, 0],  # single spike
+    })
+    result = apply_persistence_filter(df, window=3, min_hits=2)
+    assert result["confirmed_anomaly"].sum() == 0
+
+
+def test_persistence_filter_confirms_sustained_anomaly():
+    """Two consecutive anomaly days should be confirmed."""
+    dates = pd.date_range("2019-01-01", periods=5, freq="B")
+    df = pd.DataFrame({
+        "isin": ["INE202E01016"] * 5,
+        "date": dates,
+        "avg_ytm": [9.0] * 5,
+        "is_anomaly": [0, 1, 1, 0, 0],  # two consecutive
+    })
+    result = apply_persistence_filter(df, window=3, min_hits=2)
+    assert result["confirmed_anomaly"].sum() >= 2
+
+
+def test_cusum_detects_upward_regime():
+    """A sustained YTM rise should trigger CUSUM signal."""
+    dates = pd.date_range("2019-01-01", periods=40, freq="B")
+    ytm = [9.0] * 20 + [12.0] * 20  # clear regime shift at day 20
+    df = pd.DataFrame({
+        "isin": ["INE202E01016"] * 40,
+        "date": dates,
+        "avg_ytm": ytm,
+        "is_anomaly": [0] * 40,
+    })
+    result = apply_cusum(df, threshold=3.0, drift=0.5)
+    # CUSUM should fire in the second half
+    second_half = result[result["date"] >= "2019-02-01"]
+    assert second_half["cusum_signal"].sum() > 0

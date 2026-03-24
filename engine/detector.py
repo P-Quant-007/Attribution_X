@@ -128,4 +128,93 @@ def run_detection_pipeline(
         save_model(model, scaler)
 
     result = predict_anomalies(df_clean, X, model, scaler)
+    result = apply_persistence_filter(result)
+    result = apply_cusum(result)
     return result
+
+def apply_persistence_filter(
+    result_df: pd.DataFrame,
+    window: int = 3,
+    min_hits: int = 2,
+) -> pd.DataFrame:
+    """
+    Apply 2-out-of-3 rolling persistence filter per ISIN.
+
+    For each ISIN, a confirmed_anomaly is flagged only when
+    at least min_hits anomalies appear within a rolling window of days.
+
+    This eliminates single-day data glitches while preserving
+    genuine sustained stress periods.
+
+    Adds column: confirmed_anomaly (0 or 1)
+    """
+    df = result_df.copy().sort_values(["isin", "date"])
+
+    df["confirmed_anomaly"] = (
+        df.groupby("isin")["is_anomaly"]
+        .transform(
+            lambda s: s.rolling(window, min_periods=1)
+                       .sum()
+                       .ge(min_hits)
+                       .astype(int)
+        )
+    )
+
+    n_confirmed = df["confirmed_anomaly"].sum()
+    n_raw       = df["is_anomaly"].sum()
+    filtered    = n_raw - n_confirmed
+
+    print(f"[persistence] Raw anomalies: {n_raw} | "
+          f"Confirmed (≥{min_hits}/{window}): {n_confirmed} | "
+          f"Filtered out: {filtered}")
+
+    return df
+
+def apply_cusum(
+    result_df: pd.DataFrame,
+    threshold: float = 5.0,
+    drift: float = 0.5,
+) -> pd.DataFrame:
+    """
+    CUSUM (Cumulative Sum) regime shift detector on avg_ytm per ISIN.
+
+    Detects sustained upward shifts in YTM that persist beyond
+    day-to-day noise — ideal for catching slow-building credit stress.
+
+    threshold: sensitivity (lower = more sensitive). 5.0 is standard.
+    drift:     allowance for natural drift (0.5 = 50bps tolerance).
+
+    Adds column: cusum_signal (0 or 1)
+    """
+    df = result_df.copy().sort_values(["isin", "date"])
+
+    def cusum_per_isin(series: pd.Series) -> pd.Series:
+        s = series.values
+        n = len(s)
+        cusum_pos = np.zeros(n)   # upward CUSUM
+        signal    = np.zeros(n, dtype=int)
+
+        for i in range(1, n):
+            # Standardise by rolling std (min 5 periods)
+            window_vals = s[max(0, i-20):i]
+            mu  = window_vals.mean() if len(window_vals) > 1 else s[i]
+            std = window_vals.std()  if len(window_vals) > 1 else 1.0
+            std = max(std, 0.01)    # avoid division by zero
+
+            z = (s[i] - mu) / std
+            cusum_pos[i] = max(0, cusum_pos[i-1] + z - drift)
+
+            if cusum_pos[i] > threshold:
+                signal[i] = 1
+
+        return pd.Series(signal, index=series.index)
+
+    df["cusum_signal"] = (
+        df.groupby("isin")["avg_ytm"]
+        .transform(cusum_per_isin)
+    )
+
+    n_cusum = df["cusum_signal"].sum()
+    print(f"[cusum] Regime shifts detected: {n_cusum} rows flagged")
+
+    return df
