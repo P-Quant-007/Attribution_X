@@ -343,8 +343,13 @@ def get_qdrant_client() -> QdrantClient:
     return QdrantClient(url=url, api_key=api_key)
 
 
+_model_cache = None
+
 def get_embedding_model() -> SentenceTransformer:
-    return SentenceTransformer(EMBEDDING_MODEL)
+    global _model_cache
+    if _model_cache is None:
+        _model_cache = SentenceTransformer(EMBEDDING_MODEL)
+    return _model_cache
 
 
 def setup_collection(client: QdrantClient):
