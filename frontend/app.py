@@ -13,7 +13,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API_URL = "http://localhost:8000"  # replaced with Render URL on deployment
+#API_URL = "http://localhost:8000"  # replaced with Render URL on deployment
+API_URL = "https://attribution-x.onrender.com"
 
 # ── Sidebar ───────────────────────────────────────────────────────────────
 with st.sidebar:
