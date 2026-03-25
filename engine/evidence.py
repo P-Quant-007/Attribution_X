@@ -348,19 +348,31 @@ def get_embedding_model() -> SentenceTransformer:
 
 
 def setup_collection(client: QdrantClient):
-    """Create Qdrant collection if it doesn't exist."""
+    """Create Qdrant collection and payload indexes if they don't exist."""
     existing = [c.name for c in client.get_collections().collections]
-    if COLLECTION_NAME in existing:
+    if COLLECTION_NAME not in existing:
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(
+                size=VECTOR_SIZE,
+                distance=Distance.COSINE,
+            ),
+        )
+        print(f"[qdrant] Collection '{COLLECTION_NAME}' created.")
+    else:
         print(f"[qdrant] Collection '{COLLECTION_NAME}' already exists.")
-        return
-    client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=VECTOR_SIZE,
-            distance=Distance.COSINE,
-        ),
-    )
-    print(f"[qdrant] Collection '{COLLECTION_NAME}' created.")
+
+    # Create payload index on 'tag' field for filtered search
+    from qdrant_client.models import PayloadSchemaType
+    try:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="tag",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        print(f"[qdrant] Payload index created on 'tag' field.")
+    except Exception:
+        pass  # Index may already exist
 
 
 def seed_events(client: QdrantClient, model: SentenceTransformer):
@@ -413,13 +425,22 @@ def retrieve_evidence(
             )]
         )
 
-    results = client.search(
-        collection_name=COLLECTION_NAME,
-        query_vector=query_vector,
-        limit=top_k,
-        query_filter=search_filter,
-        with_payload=True,
-    )
+    try:
+        results = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=search_filter,
+            with_payload=True,
+        )
+    except Exception:
+        # Fall back to unfiltered if index not ready
+        results = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            limit=top_k,
+            with_payload=True,
+        )
 
     # Fall back to unfiltered if tag filter returns nothing
     if not results and tag_filter:
@@ -492,7 +513,21 @@ def explain_anomaly(
     )
 
     # Retrieve evidence from Qdrant
+    # Derive tag from ISIN prefix if not explicitly set
+    # INE202 = DHFL, INE535 = IL&FS, INE528 = Yes Bank
+    isin_tag_map = {
+        "INE202": "DHFL",
+        "INE535": "ILFS",
+        "INE528": "YES_BANK",
+        "INE013": "RELIANCE_CAP",
+        "INE564": "DHFL",
+    }
     tag = anomaly.get("stress_tag") or anomaly.get("tag")
+    if not tag:
+        for prefix, t in isin_tag_map.items():
+            if isin.startswith(prefix):
+                tag = t
+                break
     evidence = retrieve_evidence(
         query, client, model,
         top_k=3,
