@@ -133,6 +133,12 @@ def upsert_anomalies(df, engine=None):
     records = df[available].copy()
     records["detected_at"] = datetime.utcnow()
 
+    # Compute confidence scores before saving
+    from engine.evidence import compute_confidence_score
+    records["confidence_score"] = records.to_dict(orient="records")
+    records["confidence_score"] = [
+        compute_confidence_score(r) for r in records.to_dict(orient="records")
+    ]
     anomalies_only = records[records["is_anomaly"] == 1]
 
     with engine.connect() as conn:

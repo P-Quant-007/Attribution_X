@@ -440,3 +440,145 @@ def retrieve_evidence(
         }
         for r in results
     ]
+
+def compute_confidence_score(row: dict) -> float:
+    """
+    Compute a confidence score for an anomaly row.
+    Formula: 0.4 × prints_norm + 0.3 × vol_norm + 0.3 × persistence_flag
+    All inputs normalised to [0, 1].
+    Returns score in [0, 1].
+    """
+    # Prints component — normalise against typical max of 20 trades/day
+    prints = float(row.get("prints", 0) or 0)
+    prints_norm = min(prints / 20.0, 1.0)
+
+    # Volume component — vol_log typically 0-25, normalise against 20
+    vol_log = float(row.get("vol_log", 0) or 0)
+    vol_norm = min(vol_log / 20.0, 1.0)
+
+    # Persistence flag — 1 if confirmed, 0 if not
+    persistence = float(row.get("confirmed_anomaly", 0) or 0)
+
+    score = (0.4 * prints_norm) + (0.3 * vol_norm) + (0.3 * persistence)
+    return round(min(score, 1.0), 4)
+
+
+def explain_anomaly(
+    anomaly: dict,
+    client: QdrantClient,
+    model: SentenceTransformer,
+    anthropic_client=None,
+) -> dict:
+    """
+    Generate a full explanation for an anomaly using:
+    1. Evidence retrieved from Qdrant (always)
+    2. LLM narrative from Anthropic Claude (if API key available)
+
+    Returns dict with: evidence, confidence_score, explanation
+    """
+    # Build query from anomaly features
+    isin       = anomaly.get("isin", "")
+    date       = str(anomaly.get("date", ""))[:10]
+    avg_ytm    = anomaly.get("avg_ytm", 0)
+    spread_bps = anomaly.get("spread_bps", 0)
+    d1         = anomaly.get("d1", 0)
+    z_score    = anomaly.get("z_score_21d", 0)
+
+    query = (
+        f"Bond ISIN {isin} on {date} showed YTM of {avg_ytm:.1f}% "
+        f"with spread of {spread_bps:.0f}bps above benchmark, "
+        f"1-day change of {d1:.0f}bps and z-score of {z_score:.1f}. "
+        f"Indian credit market stress event default NBFC."
+    )
+
+    # Retrieve evidence from Qdrant
+    tag = anomaly.get("stress_tag") or anomaly.get("tag")
+    evidence = retrieve_evidence(
+        query, client, model,
+        top_k=3,
+        tag_filter=tag if tag else None
+    )
+
+    # Confidence score
+    confidence = compute_confidence_score(anomaly)
+
+    # LLM explanation
+    explanation = _generate_llm_explanation(
+        anomaly, evidence, anthropic_client
+    )
+
+    return {
+        "isin":             isin,
+        "date":             date,
+        "avg_ytm":          avg_ytm,
+        "spread_bps":       spread_bps,
+        "confidence_score": confidence,
+        "evidence":         evidence,
+        "explanation":      explanation,
+    }
+
+
+def _generate_llm_explanation(
+    anomaly: dict,
+    evidence: list,
+    anthropic_client=None,
+) -> str:
+    """
+    Generate a concise explanation using Claude.
+    Falls back to a deterministic template if no API key.
+    """
+    date       = str(anomaly.get("date", ""))[:10]
+    avg_ytm    = anomaly.get("avg_ytm", 0)
+    spread_bps = anomaly.get("spread_bps", 0)
+    d1         = anomaly.get("d1", 0)
+    z_score    = anomaly.get("z_score_21d", 0)
+    confirmed  = anomaly.get("confirmed_anomaly", 0)
+    cusum      = anomaly.get("cusum_signal", 0)
+
+    evidence_text = "\n".join([
+        f"- {e['title']} ({e['date']}): {e['text'][:200]}..."
+        for e in evidence[:2]
+    ])
+
+    # Try Claude API
+    if anthropic_client:
+        try:
+            prompt = f"""You are an expert Indian fixed income analyst.
+
+An anomaly was detected in bond trading data:
+- Date: {date}
+- YTM: {avg_ytm:.2f}%
+- Spread to benchmark: {spread_bps:.0f} bps
+- 1-day YTM change: {d1:.0f} bps
+- 21-day z-score: {z_score:.2f}
+- Confirmed by persistence filter: {"Yes" if confirmed else "No"}
+- CUSUM regime shift: {"Yes" if cusum else "No"}
+
+Relevant historical context:
+{evidence_text}
+
+Write a 3-sentence explanation of this anomaly for a fund manager. 
+Be specific about the likely cause, the severity, and the market context.
+Do not use bullet points. Be direct and factual."""
+
+            message = anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return message.content[0].text.strip()
+        except Exception as e:
+            print(f"[evidence] LLM call failed: {e}, using template.")
+
+    # Deterministic fallback — no API key needed
+    severity = "extreme" if avg_ytm > 20 else "severe" if avg_ytm > 15 else "elevated"
+    confirmed_text = "confirmed by the persistence filter" if confirmed else "flagged as a single-day event"
+    cusum_text = " A CUSUM regime shift was also detected, indicating a sustained change in yield behaviour." if cusum else ""
+
+    top_event = evidence[0]["title"] if evidence else "an Indian credit market stress event"
+
+    return (
+        f"This anomaly represents {severity} credit stress with YTM of {avg_ytm:.1f}% "
+        f"and a spread of {spread_bps:.0f} bps above the GOI benchmark, {confirmed_text}. "
+        f"The most likely market context is: {top_event}.{cusum_text}"
+    )

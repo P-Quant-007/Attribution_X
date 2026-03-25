@@ -12,6 +12,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from engine.evidence import (
+    get_qdrant_client, get_embedding_model,
+    retrieve_evidence, explain_anomaly
+)
+import anthropic
+
 from engine.loader import load_trades, load_processed_trades
 from engine.aggregator import compute_daily_ytm
 from engine.features import compute_features
@@ -152,6 +158,7 @@ def get_results(
 
         df = df.head(limit)
         df["date"] = df["date"].astype(str)
+        df = df.fillna(0).replace([float("inf"), float("-inf")], 0)
 
         return {
             "status": "success",
@@ -174,6 +181,7 @@ def get_metrics(isin: str = Query(default=None)):
         engine = get_engine()
         df = fetch_daily_metrics(isin=isin, engine=engine)
         df["date"] = df["date"].astype(str)
+        df = df.fillna(0).replace([float("inf"), float("-inf")], 0)
 
         return {
             "status": "success",
@@ -185,3 +193,46 @@ def get_metrics(isin: str = Query(default=None)):
         }
     except Exception as e:
         raise HTTPException(500, f"DB error: {str(e)}")
+
+@app.get("/explain-anomaly")
+def explain_anomaly_endpoint(
+    isin: str = Query(...),
+    date: str = Query(...),
+):
+    """
+    Get AI explanation for a specific anomaly.
+    Retrieves evidence from Qdrant and generates LLM narrative.
+    """
+    try:
+        engine = get_engine()
+        df = fetch_anomalies(engine)
+        df["date"] = df["date"].astype(str)
+
+        row = df[(df["isin"] == isin) & (df["date"].str[:10] == date[:10])]
+        if row.empty:
+            raise HTTPException(404, f"Anomaly not found for {isin} on {date}")
+
+        anomaly = row.iloc[0].to_dict()
+
+        # Get Qdrant client and embedding model
+        qdrant  = get_qdrant_client()
+        model   = get_embedding_model()
+
+        # Get Anthropic client if key available
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        ant_client = None
+        if anthropic_key and anthropic_key != "your_anthropic_api_key":
+            ant_client = anthropic.Anthropic(api_key=anthropic_key)
+
+        result = explain_anomaly(anomaly, qdrant, model, ant_client)
+        result = {k: (0 if isinstance(v, float) and
+                      (v != v or v == float("inf") or v == float("-inf"))
+                      else v)
+                  for k, v in result.items()}
+
+        return {"status": "success", "explanation": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Explanation error: {str(e)}")

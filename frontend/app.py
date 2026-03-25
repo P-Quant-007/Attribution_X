@@ -74,7 +74,8 @@ with tab1:
         if "results" in st.session_state:
             r = st.session_state["results"]
             s = r["summary"]
-            st.metric("Total Trades",    f"{s['total_trades']:,}")
+            total = s['total_trades']
+            st.metric("Total Trades",    f"{total:,}" if isinstance(total, int) else str(total))
             st.metric("Anomalies Found", s["total_anomalies"])
             st.metric("Confirmed",       s["confirmed_anomalies"])
 
@@ -293,11 +294,7 @@ with tab2:
             st.dataframe(
                 df_anom[display_cols]
                     .sort_values("anomaly_score_norm", ascending=False)
-                    .style.background_gradient(
-                        subset=["anomaly_score_norm"],
-                        cmap="RdYlGn_r"
-                    )
-                    .format({
+                    .style.format({
                         "avg_ytm": "{:.2f}",
                         "spread_bps": "{:.0f}",
                         "d1": "{:.1f}",
@@ -316,6 +313,70 @@ with tab2:
                 file_name="attribution_x_anomalies.csv",
                 mime="text/csv",
             )
+
+            # ── AI Explanation Panel ───────────────────────────────────
+            st.divider()
+            st.subheader("🤖 AI Anomaly Explanation")
+
+            col_a, col_b = st.columns([1, 2])
+            with col_a:
+                selected_isin = st.selectbox(
+                    "Select anomaly to explain",
+                    options=df_anom.sort_values(
+                        "anomaly_score_norm", ascending=False
+                    )["isin"].tolist(),
+                    key="explain_isin"
+                )
+                selected_date = df_anom[
+                    df_anom["isin"] == selected_isin
+                ]["date"].iloc[0]
+                st.caption(f"Date: {str(selected_date)[:10]}")
+
+                explain_btn = st.button(
+                    "🔍 Explain this anomaly",
+                    type="primary",
+                    use_container_width=True
+                )
+
+            with col_b:
+                if explain_btn:
+                    with st.spinner("Retrieving evidence and generating explanation..."):
+                        try:
+                            resp = requests.get(
+                                f"{api_url}/explain-anomaly",
+                                params={
+                                    "isin": selected_isin,
+                                    "date": str(selected_date)[:10]
+                                },
+                                timeout=30,
+                            )
+                            if resp.status_code == 200:
+                                expl = resp.json()["explanation"]
+                                st.session_state["last_explanation"] = expl
+                            else:
+                                st.error(f"API error: {resp.text[:200]}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+                if "last_explanation" in st.session_state:
+                    expl = st.session_state["last_explanation"]
+
+                    # Confidence score
+                    conf = expl.get("confidence_score", 0)
+                    conf_color = "🟢" if conf > 0.6 else "🟡" if conf > 0.3 else "🔴"
+                    st.metric("Confidence Score", f"{conf_color} {conf:.2%}")
+
+                    # Explanation text
+                    st.markdown("**Explanation**")
+                    st.info(expl.get("explanation", "No explanation available."))
+
+                    # Evidence
+                    st.markdown("**Supporting Evidence**")
+                    for ev in expl.get("evidence", []):
+                        with st.expander(
+                            f"📄 {ev['title']} ({ev['date']}) — similarity: {ev['score']:.3f}"
+                        ):
+                            st.write(ev["text"])
 
 
 # ── TAB 3: About ──────────────────────────────────────────────────────────
