@@ -6,14 +6,24 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct
 )
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
+#from sentence_transformers import SentenceTransformer
 import numpy as np
 
 load_dotenv()
 
 COLLECTION_NAME = "credit_events"
-EMBEDDING_MODEL  = "all-MiniLM-L6-v2"  # fast, 384-dim, works offline
+#EMBEDDING_MODEL  = "all-MiniLM-L6-v2"  # fast, 384-dim, works offline
+EMBEDDING_MODEL  = "BAAI/bge-small-en-v1.5"  # fast ONNX model, no torch needed
 VECTOR_SIZE      = 384
+
+_model_cache = None
+
+def get_embedding_model() -> TextEmbedding:
+    global _model_cache
+    if _model_cache is None:
+        _model_cache = TextEmbedding(EMBEDDING_MODEL)
+    return _model_cache
 
 # ── Credit event corpus ───────────────────────────────────────────────────
 # 20 carefully written events covering Indian credit stress 2015-2024
@@ -343,13 +353,13 @@ def get_qdrant_client() -> QdrantClient:
     return QdrantClient(url=url, api_key=api_key)
 
 
-_model_cache = None
+#_model_cache = None
 
-def get_embedding_model() -> SentenceTransformer:
-    global _model_cache
-    if _model_cache is None:
-        _model_cache = SentenceTransformer(EMBEDDING_MODEL)
-    return _model_cache
+#def get_embedding_model() -> SentenceTransformer:
+#    global _model_cache
+#    if _model_cache is None:
+#        _model_cache = SentenceTransformer(EMBEDDING_MODEL)
+#    return _model_cache
 
 
 def setup_collection(client: QdrantClient):
@@ -380,11 +390,13 @@ def setup_collection(client: QdrantClient):
         pass  # Index may already exist
 
 
-def seed_events(client: QdrantClient, model: SentenceTransformer):
+#def seed_events(client: QdrantClient, model: SentenceTransformer):
+def seed_events(client: QdrantClient, model: TextEmbedding):
     """Embed and upload all credit events to Qdrant."""
     texts = [e["text"] for e in CREDIT_EVENTS]
     print(f"[qdrant] Embedding {len(texts)} events...")
-    embeddings = model.encode(texts, show_progress_bar=False)
+    #embeddings = model.encode(texts, show_progress_bar=False)
+    embeddings = list(model.embed(texts))
 
     points = []
     for event, embedding in zip(CREDIT_EVENTS, embeddings):
@@ -407,7 +419,8 @@ def seed_events(client: QdrantClient, model: SentenceTransformer):
 def retrieve_evidence(
     query: str,
     client: QdrantClient,
-    model: SentenceTransformer,
+    #model: SentenceTransformer,
+    model: TextEmbedding,
     top_k: int = 3,
     tag_filter: str = None,
 ) -> list[dict]:
@@ -417,7 +430,8 @@ def retrieve_evidence(
     query:      natural language description of the anomaly
     tag_filter: optional issuer tag to bias results (e.g. 'DHFL')
     """
-    query_vector = model.encode(query).tolist()
+    #query_vector = model.encode(query).tolist()
+    query_vector = list(model.embed([query]))[0].tolist()
 
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
@@ -492,7 +506,8 @@ def compute_confidence_score(row: dict) -> float:
 def explain_anomaly(
     anomaly: dict,
     client: QdrantClient,
-    model: SentenceTransformer,
+    #model: SentenceTransformer,
+    model: TextEmbedding,
     anthropic_client=None,
 ) -> dict:
     """
@@ -601,8 +616,10 @@ Write a 3-sentence explanation of this anomaly for a fund manager.
 Be specific about the likely cause, the severity, and the market context.
 Do not use bullet points. Be direct and factual."""
 
+            #message = anthropic_client.messages.create(
+            #    model="claude-haiku-4-5-20251001",
             message = anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-haiku-4-5",
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}]
             )

@@ -2,8 +2,8 @@ services:
   - type: web
     name: attribution-x-api
     runtime: python
-    buildCommand: pip install -r requirements.txt && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 120
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false

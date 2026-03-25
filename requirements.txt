@@ -17,7 +17,9 @@ sqlalchemy==2.0.30
 
 # Vector DB
 qdrant-client==1.9.1
-sentence-transformers==2.7.0
+
+# Embeddings — lightweight, no torch required
+fastembed==0.3.1
 
 # AI
 anthropic==0.25.0
