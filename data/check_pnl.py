@@ -49,3 +49,14 @@ else:
     print(f"\n=== TOP DETRACTORS ===")
     for b in report["top_detractors"]:
         print(f"  {b['isin']} | {b['issuer_name'][:30]} | ₹{b['total_pnl']:,.2f}L")
+
+# Save to DB
+import os
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, '.')
+sys.path.insert(0, 'backend')
+from backend.database import get_engine, save_portfolio_pnl
+
+engine = get_engine()
+save_portfolio_pnl(pnl, portfolio_id="demo_portfolio", engine=engine)
+print(f"\n[db] PnL saved. Report ready for API.")
