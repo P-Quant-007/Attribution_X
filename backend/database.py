@@ -77,6 +77,48 @@ class Anomaly(Base):
     confidence_score    = Column(Float)
     detected_at         = Column(DateTime, default=datetime.utcnow)
 
+class Portfolio(Base):
+    __tablename__ = "portfolios"
+
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id        = Column(String(50), nullable=False, index=True)
+    isin                = Column(String(12), nullable=False, index=True)
+    issuer_name         = Column(String(255))
+    coupon              = Column(Float)
+    maturity_date       = Column(Date)
+    face_value          = Column(Float)
+    weight              = Column(Float)
+    rating              = Column(String(20))
+    years_to_maturity   = Column(Float)
+    stress_tag          = Column(String(50))
+    is_stress_issuer    = Column(Boolean, default=False)
+    call_date           = Column(Date, nullable=True)
+    put_date            = Column(Date, nullable=True)
+    uploaded_at         = Column(DateTime, default=datetime.utcnow)
+
+
+class PortfolioPnL(Base):
+    __tablename__ = "portfolio_pnl"
+
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id        = Column(String(50), nullable=False, index=True)
+    date                = Column(Date, nullable=False, index=True)
+    isin                = Column(String(12), nullable=False, index=True)
+    issuer_name         = Column(String(255))
+    face_value          = Column(Float)
+    weight              = Column(Float)
+    coupon              = Column(Float)
+    avg_ytm             = Column(Float)
+    d1_bps              = Column(Float)
+    modified_duration   = Column(Float)
+    dv01                = Column(Float)
+    daily_pnl           = Column(Float)
+    benchmark_pnl       = Column(Float)
+    spread_pnl          = Column(Float)
+    cumulative_pnl      = Column(Float)
+    stress_tag          = Column(String(50))
+    is_anomaly          = Column(Integer, default=0)
+    computed_at         = Column(DateTime, default=datetime.utcnow)
 
 # ── Table management ──────────────────────────────────────────────────────
 
@@ -170,3 +212,84 @@ def fetch_daily_metrics(isin: str = None, engine=None) -> "pd.DataFrame":
     if isin:
         query = f"SELECT * FROM daily_metrics WHERE isin = '{isin}' ORDER BY date"
     return pd.read_sql(query, engine)
+
+def save_portfolio(df: pd.DataFrame, portfolio_id: str, engine=None):
+    """Save portfolio holdings to DB."""
+    if engine is None:
+        engine = get_engine()
+
+    records = df.copy()
+    records["portfolio_id"] = portfolio_id
+    records["uploaded_at"]  = datetime.utcnow()
+
+    # Convert dates to strings for DB
+    for col in ["maturity_date", "call_date", "put_date"]:
+        if col in records.columns:
+            records[col] = pd.to_datetime(
+                records[col], errors="coerce"
+            ).dt.date
+
+    # Drop columns not in schema
+    keep = [
+        "portfolio_id", "isin", "issuer_name", "coupon",
+        "maturity_date", "face_value", "weight", "rating",
+        "years_to_maturity", "stress_tag", "is_stress_issuer",
+        "call_date", "put_date", "uploaded_at"
+    ]
+    records = records[[c for c in keep if c in records.columns]]
+
+    with engine.connect() as conn:
+        conn.execute(
+            text("DELETE FROM portfolios WHERE portfolio_id = :pid"),
+            {"pid": portfolio_id}
+        )
+        conn.commit()
+
+    records.to_sql("portfolios", engine, if_exists="append",
+                   index=False, method="multi", chunksize=500)
+    print(f"[db] Saved {len(records)} holdings for portfolio '{portfolio_id}'")
+
+
+def fetch_portfolio(portfolio_id: str, engine=None) -> pd.DataFrame:
+    if engine is None:
+        engine = get_engine()
+    return pd.read_sql(
+        f"SELECT * FROM portfolios WHERE portfolio_id = '{portfolio_id}' ORDER BY face_value DESC",
+        engine
+    )
+
+
+def save_portfolio_pnl(df: pd.DataFrame, portfolio_id: str, engine=None):
+    """Save PnL attribution results to DB."""
+    if engine is None:
+        engine = get_engine()
+
+    records = df.copy()
+    records["portfolio_id"] = portfolio_id
+    records["computed_at"]  = datetime.utcnow()
+    records["date"] = pd.to_datetime(records["date"], errors="coerce").dt.date
+
+    # Clean NaN/Inf
+    records = records.fillna(0).replace(
+        [float("inf"), float("-inf")], 0
+    )
+
+    with engine.connect() as conn:
+        conn.execute(
+            text("DELETE FROM portfolio_pnl WHERE portfolio_id = :pid"),
+            {"pid": portfolio_id}
+        )
+        conn.commit()
+
+    records.to_sql("portfolio_pnl", engine, if_exists="append",
+                   index=False, method="multi", chunksize=500)
+    print(f"[db] Saved {len(records)} PnL rows for portfolio '{portfolio_id}'")
+
+
+def fetch_portfolio_pnl(portfolio_id: str, engine=None) -> pd.DataFrame:
+    if engine is None:
+        engine = get_engine()
+    return pd.read_sql(
+        f"SELECT * FROM portfolio_pnl WHERE portfolio_id = '{portfolio_id}' ORDER BY date, isin",
+        engine
+    )
