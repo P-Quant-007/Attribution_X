@@ -198,6 +198,206 @@ def get_metrics(isin: str = Query(default=None)):
     except Exception as e:
         raise HTTPException(500, f"DB error: {str(e)}")
 
+# ── Portfolio endpoints ───────────────────────────────────────────────────
+
+@app.post("/upload-portfolio")
+async def upload_portfolio(
+    file: UploadFile = File(...),
+    portfolio_id: str = Query(default="default_portfolio"),
+):
+    """
+    Upload a portfolio CSV/XLSX and persist to DB.
+    Returns portfolio summary with DV01 profile.
+    """
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".csv", ".xlsx", ".xls"}:
+        raise HTTPException(400, f"Unsupported file type: {suffix}")
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        from engine.portfolio import load_portfolio, portfolio_summary
+        from engine.loader import load_processed_trades
+        from engine.aggregator import compute_daily_ytm
+        from engine.features import compute_features
+        from engine.pnl import enrich_portfolio_with_duration
+        from backend.database import save_portfolio
+
+        portfolio_df = load_portfolio(tmp_path)
+
+        # Enrich with duration using stored metrics
+        engine_db = get_engine()
+        metrics_df = fetch_daily_metrics(engine=engine_db)
+        if not metrics_df.empty:
+            metrics_df["date"] = pd.to_datetime(metrics_df["date"])
+            enriched = enrich_portfolio_with_duration(portfolio_df, metrics_df)
+        else:
+            enriched = portfolio_df.copy()
+            enriched["current_ytm"] = enriched["coupon"]
+            enriched["modified_duration"] = 0.0
+            enriched["dv01"] = 0.0
+            enriched["dv01_contribution_pct"] = 0.0
+            enriched["price_per_lac"] = 100.0
+
+        save_portfolio(enriched, portfolio_id=portfolio_id, engine=engine_db)
+
+        summary = portfolio_summary(enriched)
+        summary["portfolio_id"] = portfolio_id
+        summary["portfolio_dv01"] = round(float(enriched.get("dv01", pd.Series([0])).sum()), 4) if "dv01" in enriched.columns else 0.0
+
+        # Clean NaN
+        import math
+        def clean(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return 0.0
+            return v
+
+        summary["holdings"] = [
+            {k: clean(val) if isinstance(val, float) else val
+             for k, val in h.items()}
+            for h in summary["holdings"]
+        ]
+
+        return {"status": "success", "summary": summary}
+
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio error: {str(e)}\n{traceback.format_exc()}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+@app.get("/get-pnl-attribution")
+def get_pnl_attribution(
+    portfolio_id: str = Query(default="default_portfolio"),
+    start_date:   str = Query(default="2018-01-01"),
+    end_date:     str = Query(default="2019-12-31"),
+):
+    """
+    Run PnL attribution for a stored portfolio.
+    Returns per-bond and portfolio-level attribution report.
+    """
+    try:
+        from engine.pnl import (
+            enrich_portfolio_with_duration,
+            compute_daily_pnl,
+            generate_attribution_report,
+        )
+        from backend.database import fetch_portfolio
+
+        engine_db = get_engine()
+        portfolio_df = fetch_portfolio(portfolio_id, engine=engine_db)
+
+        if portfolio_df.empty:
+            raise HTTPException(404, f"Portfolio '{portfolio_id}' not found. Upload it first.")
+
+        portfolio_df["maturity_date"] = pd.to_datetime(portfolio_df["maturity_date"])
+
+        metrics_df = fetch_daily_metrics(engine=engine_db)
+        metrics_df["date"] = pd.to_datetime(metrics_df["date"])
+
+        enriched = enrich_portfolio_with_duration(portfolio_df, metrics_df)
+        all_metrics = pd.read_sql(
+            "SELECT * FROM daily_metrics ORDER BY isin, date",
+            engine_db
+        )
+        all_metrics["date"] = pd.to_datetime(all_metrics["date"])
+        all_metrics = all_metrics.fillna(0).replace([float("inf"), float("-inf")], 0)
+
+        pnl = compute_daily_pnl(enriched, all_metrics, start_date, end_date)
+
+        if pnl.empty:
+            return {
+                "status": "success",
+                "message": "No PnL data found for portfolio ISINs in date range.",
+                "report": {}
+            }
+
+        from backend.database import save_portfolio_pnl
+        save_portfolio_pnl(pnl, portfolio_id=portfolio_id, engine=engine_db)
+
+        report = generate_attribution_report(pnl)
+
+        # Clean NaN/Inf
+        import json
+        report_clean = json.loads(
+            json.dumps(report, default=lambda x: 0 if isinstance(x, float) and (x != x or abs(x) == float("inf")) else x)
+        )
+
+        return {"status": "success", "portfolio_id": portfolio_id, "report": report_clean}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Attribution error: {str(e)}\n{traceback.format_exc()}")
+
+
+@app.get("/get-suggestions")
+def get_suggestions(
+    portfolio_id: str = Query(default="default_portfolio"),
+    start_date:   str = Query(default="2018-01-01"),
+    end_date:     str = Query(default="2019-12-31"),
+):
+    """
+    Generate 3 AI reallocation suggestions for a portfolio.
+    Combines PnL attribution + anomaly signals.
+    """
+    try:
+        from engine.pnl import (
+            enrich_portfolio_with_duration,
+            compute_daily_pnl,
+            generate_attribution_report,
+        )
+        from engine.suggestions import generate_suggestions
+        from backend.database import fetch_portfolio
+
+        engine_db   = get_engine()
+        portfolio_df = fetch_portfolio(portfolio_id, engine=engine_db)
+
+        if portfolio_df.empty:
+            raise HTTPException(404, f"Portfolio '{portfolio_id}' not found.")
+
+        portfolio_df["maturity_date"] = pd.to_datetime(portfolio_df["maturity_date"])
+
+        metrics_df = fetch_daily_metrics(engine=engine_db)
+        metrics_df["date"] = pd.to_datetime(metrics_df["date"])
+
+        enriched = enrich_portfolio_with_duration(portfolio_df, metrics_df)
+
+        all_metrics = pd.read_sql(
+            "SELECT * FROM daily_metrics ORDER BY isin, date",
+            engine_db
+        )
+        all_metrics["date"] = pd.to_datetime(all_metrics["date"])
+        all_metrics = all_metrics.fillna(0).replace([float("inf"), float("-inf")], 0)
+
+        pnl    = compute_daily_pnl(enriched, all_metrics, start_date, end_date)
+        report = generate_attribution_report(pnl)
+
+        anomalies = fetch_anomalies(engine_db)
+        anomalies  = anomalies.fillna(0).replace([float("inf"), float("-inf")], 0)
+
+        ant_key    = os.getenv("ANTHROPIC_API_KEY", "")
+        suggestions = generate_suggestions(report, anomalies, portfolio_df, ant_key)
+
+        return {
+            "status":      "success",
+            "portfolio_id": portfolio_id,
+            "suggestions": suggestions,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Suggestion error: {str(e)}\n{traceback.format_exc()}")
+
 @app.get("/explain-anomaly")
 def explain_anomaly_endpoint(
     isin: str = Query(...),
