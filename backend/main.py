@@ -32,7 +32,11 @@ app = FastAPI(
     description="AI Agent for Credit Market Stress Detection",
     version="1.0.0",
 )
-
+@app.on_event("startup")
+async def startup_event():
+    """Startup event — keep lightweight, no model loading here."""
+    import logging
+    logging.info("Attribution X API starting up...")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

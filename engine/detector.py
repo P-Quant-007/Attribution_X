@@ -11,8 +11,8 @@ FEATURE_COLS = [
     "vol_log", "spread_bps", "spread_d1", "prints"
 ]
 
-MODEL_PATH = Path("engine/isolation_forest.pkl")
-SCALER_PATH = Path("engine/scaler.pkl")
+MODEL_PATH  = Path(__file__).parent / "isolation_forest.pkl"
+SCALER_PATH = Path(__file__).parent / "scaler.pkl"
 
 
 def train_model(
