@@ -107,7 +107,7 @@ def load_portfolio(filepath: str | Path) -> pd.DataFrame:
 
     # ── Clean maturity date ────────────────────────────────────────────────
     df["maturity_date"] = pd.to_datetime(
-        df["maturity_date"], dayfirst=True, errors="coerce"
+        df["maturity_date"], format="mixed", dayfirst=True, errors="coerce"
     )
     if df["maturity_date"].isna().any():
         raise ValueError("maturity_date could not be parsed for all rows.")
@@ -119,7 +119,7 @@ def load_portfolio(filepath: str | Path) -> pd.DataFrame:
 
     # ── Clean optional dates ───────────────────────────────────────────────
     for col in ["call_date", "put_date"]:
-        df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+        df[col] = pd.to_datetime(df[col], format="mixed", dayfirst=True, errors="coerce")
 
     # ── Clean rating ───────────────────────────────────────────────────────
     df["rating"] = df["rating"].fillna("NR").astype(str).str.strip().str.upper()
