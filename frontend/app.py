@@ -56,7 +56,7 @@ st.title("📊 Attribution X")
 st.markdown("**Credit Market Stress Detection & NAV Attribution** — Indian Fixed Income")
 st.divider()
 
-tab1, tab2, tab3 = st.tabs(["🔍 Run Analysis", "📈 Results", "ℹ️ About"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 Run Analysis", "📈 Results", "💼 Portfolio", "ℹ️ About"])
 
 # ── TAB 1: Upload & Run ───────────────────────────────────────────────────
 with tab1:
@@ -380,8 +380,220 @@ with tab2:
                             st.write(ev["text"])
 
 
-# ── TAB 3: About ──────────────────────────────────────────────────────────
+# ── TAB 3: Portfolio ──────────────────────────────────────────────────────
 with tab3:
+    st.subheader("Portfolio Manager")
+
+    col_up, col_set = st.columns([2, 1])
+
+    with col_up:
+        portfolio_file = st.file_uploader(
+            "Upload portfolio CSV",
+            type=["csv", "xlsx"],
+            help="Columns: isin, issuer_name, coupon, maturity_date, face_value, rating",
+            key="portfolio_uploader"
+        )
+
+    with col_set:
+        portfolio_id = st.text_input("Portfolio ID", value="demo_portfolio")
+        start_date   = st.text_input("Analysis start", value="2018-01-01")
+        end_date     = st.text_input("Analysis end",   value="2019-12-31")
+
+    if portfolio_file:
+        if st.button("📤 Upload Portfolio", type="primary"):
+            with st.spinner("Uploading and computing DV01 profile..."):
+                try:
+                    resp = requests.post(
+                        f"{api_url}/upload-portfolio",
+                        files={"file": (portfolio_file.name,
+                                        portfolio_file.getvalue(),
+                                        "text/csv")},
+                        params={"portfolio_id": portfolio_id},
+                        timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        st.session_state["portfolio_summary"] = resp.json()["summary"]
+                        st.success("Portfolio uploaded successfully!")
+                        st.rerun()
+                    else:
+                        st.error(f"Upload failed: {resp.text[:200]}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # Demo load button
+    if "portfolio_summary" not in st.session_state:
+        if st.button("📂 Load demo portfolio from DB"):
+            st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
+            st.rerun()
+
+    if "portfolio_summary" in st.session_state:
+        psummary = st.session_state["portfolio_summary"]
+
+        # ── Holdings table ─────────────────────────────────────────────
+        if "holdings" in psummary:
+            st.divider()
+            st.subheader("Holdings")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total AUM", f"₹{psummary.get('total_aum_lacs', 0):,.0f}L")
+            c2.metric("Holdings",  psummary.get("total_holdings", 0))
+            c3.metric("Stress exposure", f"{psummary.get('stress_aum_pct', 0):.1f}%")
+            c4.metric("Portfolio DV01", f"₹{psummary.get('portfolio_dv01', 0):.2f}L/bp")
+
+            holdings_df = pd.DataFrame(psummary["holdings"])
+            holdings_df["stress"] = holdings_df["is_stress_issuer"].apply(
+                lambda x: "⚠️" if x else ""
+            )
+            display_cols = ["stress", "isin", "issuer_name", "coupon",
+                            "face_value", "weight", "rating", "stress_tag"]
+            available = [c for c in display_cols if c in holdings_df.columns]
+            st.dataframe(
+                holdings_df[available].style.apply(
+                    lambda row: ["background-color: rgba(255,100,100,0.15)"] * len(row)
+                    if row.get("is_stress_issuer", False) else [""] * len(row),
+                    axis=1
+                ),
+                use_container_width=True,
+                height=300,
+            )
+
+        # ── PnL Attribution ────────────────────────────────────────────
+        st.divider()
+        st.subheader("PnL Attribution")
+
+        if st.button("📊 Run PnL Attribution", type="primary"):
+            with st.spinner("Running attribution engine..."):
+                try:
+                    resp = requests.get(
+                        f"{api_url}/get-pnl-attribution",
+                        params={
+                            "portfolio_id": portfolio_id,
+                            "start_date":   start_date,
+                            "end_date":     end_date,
+                        },
+                        timeout=120,
+                    )
+                    if resp.status_code == 200:
+                        st.session_state["pnl_report"] = resp.json()["report"]
+                        st.success("Attribution complete!")
+                        st.rerun()
+                    else:
+                        st.error(f"Attribution failed: {resp.text[:200]}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        if "pnl_report" in st.session_state:
+            report = st.session_state["pnl_report"]
+            summary = report.get("summary", {})
+
+            # Summary metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total PnL",      f"₹{summary.get('total_pnl_lacs', 0):,.2f}L")
+            m2.metric("Benchmark PnL",  f"₹{summary.get('benchmark_pnl_lacs', 0):,.2f}L")
+            m3.metric("Spread PnL",     f"₹{summary.get('spread_pnl_lacs', 0):,.2f}L")
+            m4.metric("Spread % total", f"{summary.get('spread_pct_of_total', 0):.1f}%")
+
+            # Cumulative PnL chart
+            daily = pd.DataFrame(report.get("daily_portfolio", []))
+            if not daily.empty:
+                daily["date"] = pd.to_datetime(daily["date"])
+                fig_cum = go.Figure()
+                fig_cum.add_trace(go.Scatter(
+                    x=daily["date"],
+                    y=daily["portfolio_cumulative_pnl"],
+                    mode="lines",
+                    fill="tozeroy",
+                    name="Cumulative PnL",
+                    line=dict(color="#E24B4A", width=2),
+                    fillcolor="rgba(226,75,74,0.15)",
+                ))
+                fig_cum.update_layout(
+                    title="Cumulative Portfolio PnL (₹ Lacs)",
+                    height=350,
+                    hovermode="x unified",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                fig_cum.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
+                fig_cum.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
+                st.plotly_chart(fig_cum, use_container_width=True)
+
+            # By bond waterfall
+            by_bond = pd.DataFrame(report.get("by_bond", []))
+            if not by_bond.empty:
+                fig_wf = go.Figure(go.Bar(
+                    x=by_bond["issuer_name"].str[:25],
+                    y=by_bond["total_pnl"],
+                    marker_color=[
+                        "#E24B4A" if v < 0 else "#639922"
+                        for v in by_bond["total_pnl"]
+                    ],
+                    text=by_bond["total_pnl"].apply(lambda x: f"₹{x:,.0f}L"),
+                    textposition="outside",
+                ))
+                fig_wf.update_layout(
+                    title="PnL by Bond (₹ Lacs)",
+                    height=350,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_wf, use_container_width=True)
+
+        # ── AI Suggestions ─────────────────────────────────────────────
+        st.divider()
+        st.subheader("🤖 AI Reallocation Suggestions")
+
+        if st.button("✨ Generate AI Suggestions", type="primary"):
+            with st.spinner("Analysing portfolio and generating suggestions..."):
+                try:
+                    resp = requests.get(
+                        f"{api_url}/get-suggestions",
+                        params={"portfolio_id": portfolio_id,
+                                "start_date": start_date,
+                                "end_date": end_date},
+                        timeout=120,
+                    )
+                    if resp.status_code == 200:
+                        st.session_state["suggestions"] = resp.json()["suggestions"]
+                        st.success("Suggestions generated!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed: {resp.text[:200]}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        if "suggestions" in st.session_state:
+            suggestions = st.session_state["suggestions"]
+            action_colors = {
+                "REDUCE": "#E24B4A", "ADD": "#639922", "SWITCH": "#BA7517"
+            }
+            priority_icons = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
+
+            st.caption("⚠️ AI-generated advisory. Not financial advice. Verify independently.")
+            st.divider()
+
+            for i, s in enumerate(suggestions, 1):
+                action  = s.get("action", "")
+                color   = action_colors.get(action, "#888")
+                priority = s.get("priority", "MEDIUM")
+                icon    = priority_icons.get(priority, "🟡")
+
+                st.markdown(
+                    f"""<div style="border-left: 4px solid {color}; padding: 12px 16px;
+                    border-radius: 0 8px 8px 0; margin-bottom: 12px;
+                    background: rgba(128,128,128,0.05);">
+                    <span style="font-weight:500; color:{color};">{action}</span>
+                    &nbsp;&nbsp;{icon} <b>{s.get('target', '')}</b>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+                st.write(f"**Rationale:** {s.get('rationale', '')}")
+                st.caption(f"⚡ Risk: {s.get('risk_note', '')}")
+                if i < len(suggestions):
+                    st.divider()
+
+# ── TAB 4: About ──────────────────────────────────────────────────────────
+with tab4:
     st.subheader("About Attribution X")
     st.markdown("""
     **Attribution X** is an AI-powered system for the Indian fixed-income market that:
