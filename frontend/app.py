@@ -60,62 +60,17 @@ tab1, tab2, tab3, tab4 = st.tabs(["🔍 Run Analysis", "📈 Results", "💼 Por
 
 # ── TAB 1: Upload & Run ───────────────────────────────────────────────────
 with tab1:
-    col1, col2 = st.columns([2, 1])
+    # ── Primary action: load pre-trained results from DB ─────────────────
+    st.subheader("Credit Market Stress Detection")
+    st.caption(
+        "Pre-trained on the full CBRICS dataset. "
+        "Click below to load results instantly."
+    )
 
-    with col1:
-        st.subheader("Upload Trade Data")
-        uploaded = st.file_uploader(
-            "Upload CSV or XLSX",
-            type=["csv", "xlsx"],
-            help="CBRICS format or processed_trades.csv"
-        )
+    col_btn, col_stats = st.columns([1, 2])
 
-    with col2:
-        st.subheader("Quick Stats")
-        if "results" in st.session_state:
-            r = st.session_state["results"]
-            s = r["summary"]
-            total = s['total_trades']
-            st.metric("Total Trades",    f"{total:,}" if isinstance(total, int) else str(total))
-            st.metric("Anomalies Found", s["total_anomalies"])
-            st.metric("Confirmed",       s["confirmed_anomalies"])
-
-    if uploaded:
-        if st.button("▶ Run Analysis", type="primary", use_container_width=True):
-            with st.spinner("Running pipeline... (this takes ~30 seconds)"):
-                try:
-                    params = {"contamination": contamination}
-                    if stress_tag != "ALL":
-                        params["stress_tag"] = stress_tag
-
-                    resp = requests.post(
-                        f"{api_url}/run-analysis",
-                        files={"file": (uploaded.name,
-                                        uploaded.getvalue(),
-                                        "text/csv")},
-                        params=params,
-                        timeout=120,
-                    )
-
-                    if resp.status_code == 200:
-                        st.session_state["results"] = resp.json()
-                        st.success("Analysis complete!")
-                        st.rerun()
-                    else:
-                        st.error(f"API error {resp.status_code}: {resp.text[:300]}")
-
-                except requests.exceptions.ConnectionError:
-                    st.error("Cannot connect to API. Is the backend running?")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    else:
-        st.info("Upload your CBRICS trade file to begin analysis.")
-
-        # Demo mode — load from DB
-        st.divider()
-        st.subheader("Or load stored results")
-        if st.button("📂 Load last results from DB"):
+    with col_btn:
+        if st.button("📂 Load Results from DB", type="primary", use_container_width=True):
             with st.spinner("Fetching from database..."):
                 try:
                     params = {"confirmed_only": confirmed_only, "limit": 500}
@@ -136,12 +91,62 @@ with tab1:
                             },
                             "anomalies": data["anomalies"],
                         }
-                        st.success(f"Loaded {data['count']} anomalies from DB")
+                        st.success(f"Loaded {data['count']} anomalies")
                         st.rerun()
                     else:
                         st.error("Failed to fetch results")
                 except Exception as e:
                     st.error(f"Error: {e}")
+
+    with col_stats:
+        if "results" in st.session_state:
+            r = st.session_state["results"]
+            s = r["summary"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Anomalies", s["total_anomalies"])
+            m2.metric("Confirmed", s["confirmed_anomalies"])
+            m3.metric("Model", "Pre-trained")
+
+    # ── Advanced: upload a new CBRICS file (uses pre-trained model) ───────
+    st.divider()
+    with st.expander("Advanced — score a new CBRICS file using the pre-trained model"):
+        st.caption(
+            "Upload any CBRICS CSV/XLSX. The pre-trained model will score it. "
+            "This does NOT retrain the model."
+        )
+        uploaded = st.file_uploader(
+            "Upload CSV or XLSX",
+            type=["csv", "xlsx"],
+            help="CBRICS format or processed_trades.csv"
+        )
+        if uploaded:
+            if st.button("▶ Score with Pre-trained Model", type="primary", use_container_width=True):
+                with st.spinner("Scoring trades using pre-trained model..."):
+                    try:
+                        params = {}
+                        if stress_tag != "ALL":
+                            params["stress_tag"] = stress_tag
+
+                        resp = requests.post(
+                            f"{api_url}/run-analysis",
+                            files={"file": (uploaded.name,
+                                            uploaded.getvalue(),
+                                            "text/csv")},
+                            params=params,
+                            timeout=120,
+                        )
+
+                        if resp.status_code == 200:
+                            st.session_state["results"] = resp.json()
+                            st.success("Scoring complete!")
+                            st.rerun()
+                        else:
+                            st.error(f"API error {resp.status_code}: {resp.text[:300]}")
+
+                    except requests.exceptions.ConnectionError:
+                        st.error("Cannot connect to API. Is the backend running?")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
 
 # ── TAB 2: Results & Charts ───────────────────────────────────────────────
@@ -382,49 +387,61 @@ with tab2:
 
 # ── TAB 3: Portfolio ──────────────────────────────────────────────────────
 with tab3:
-    st.subheader("Portfolio Manager")
+    st.subheader("Portfolio PnL Attribution")
 
-    col_up, col_set = st.columns([2, 1])
+    # Hidden settings — always use demo defaults
+    portfolio_id = "demo_portfolio"
+    start_date   = "2018-01-01"
+    end_date     = "2019-12-31"
 
-    with col_up:
-        portfolio_file = st.file_uploader(
-            "Upload portfolio CSV",
-            type=["csv", "xlsx"],
-            help="Columns: isin, issuer_name, coupon, maturity_date, face_value, rating",
-            key="portfolio_uploader"
-        )
-
-    with col_set:
-        portfolio_id = st.text_input("Portfolio ID", value="demo_portfolio")
-        start_date   = st.text_input("Analysis start", value="2018-01-01")
-        end_date     = st.text_input("Analysis end",   value="2019-12-31")
-
-    if portfolio_file:
-        if st.button("📤 Upload Portfolio", type="primary"):
-            with st.spinner("Uploading and computing DV01 profile..."):
-                try:
-                    resp = requests.post(
-                        f"{api_url}/upload-portfolio",
-                        files={"file": (portfolio_file.name,
-                                        portfolio_file.getvalue(),
-                                        "text/csv")},
-                        params={"portfolio_id": portfolio_id},
-                        timeout=60,
-                    )
-                    if resp.status_code == 200:
-                        st.session_state["portfolio_summary"] = resp.json()["summary"]
-                        st.success("Portfolio uploaded successfully!")
-                        st.rerun()
-                    else:
-                        st.error(f"Upload failed: {resp.text[:200]}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    # Demo load button
+    # ── Primary action: load demo portfolio from DB ───────────────────────
     if "portfolio_summary" not in st.session_state:
-        if st.button("📂 Load demo portfolio from DB"):
+        st.caption(
+            "Demo portfolio: 8 bonds including DHFL, IL&FS, Yes Bank, NABARD, HDFC. "
+            "Period: 2018–2019 DHFL stress cycle."
+        )
+        if st.button("📂 Load Demo Portfolio", type="primary", use_container_width=True):
             st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
             st.rerun()
+
+    # ── Advanced: upload your own portfolio ───────────────────────────────
+    with st.expander("Advanced — upload your own portfolio"):
+        col_up, col_set = st.columns([2, 1])
+        with col_up:
+            portfolio_file = st.file_uploader(
+                "Upload portfolio CSV",
+                type=["csv", "xlsx"],
+                help="Columns: isin, issuer_name, coupon, maturity_date, face_value, rating",
+                key="portfolio_uploader"
+            )
+        with col_set:
+            custom_portfolio_id = st.text_input("Portfolio ID", value="custom_portfolio")
+            custom_start = st.text_input("Analysis start", value="2018-01-01")
+            custom_end   = st.text_input("Analysis end",   value="2019-12-31")
+
+        if portfolio_file:
+            if st.button("📤 Upload Portfolio", type="primary"):
+                with st.spinner("Uploading and computing DV01 profile..."):
+                    try:
+                        resp = requests.post(
+                            f"{api_url}/upload-portfolio",
+                            files={"file": (portfolio_file.name,
+                                            portfolio_file.getvalue(),
+                                            "text/csv")},
+                            params={"portfolio_id": custom_portfolio_id},
+                            timeout=60,
+                        )
+                        if resp.status_code == 200:
+                            st.session_state["portfolio_summary"] = resp.json()["summary"]
+                            portfolio_id = custom_portfolio_id
+                            start_date   = custom_start
+                            end_date     = custom_end
+                            st.success("Portfolio uploaded successfully!")
+                            st.rerun()
+                        else:
+                            st.error(f"Upload failed: {resp.text[:200]}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
     if "portfolio_summary" in st.session_state:
         psummary = st.session_state["portfolio_summary"]
