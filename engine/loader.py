@@ -10,6 +10,7 @@ COLUMN_ALIASES = {
     "Date": "date",
     "DATE": "date",
     "Trade Date": "date",
+    "trade date": "date",
     "ISIN": "isin",
     "Isin": "isin",
     "Bond": "isin",
