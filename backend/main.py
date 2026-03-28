@@ -509,6 +509,3 @@ def write_anomalies_direct(result_df, engine):
               index=False, method="multi", chunksize=500)
     print(f"[db] Wrote {len(df)} rows to anomalies")
 
-# Call it directly
-write_anomalies_direct(result, engine)
-print(f"\n[ingest] Complete. {confirmed} confirmed anomalies in Neon.")
