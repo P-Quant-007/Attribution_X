@@ -21,7 +21,8 @@ import anthropic
 from engine.loader import load_trades, load_processed_trades
 from engine.aggregator import compute_daily_ytm
 from engine.features import compute_features
-from engine.detector import run_detection_pipeline
+from engine.detector import run_detection_pipeline, load_model, predict_anomalies
+from engine.features import get_feature_matrix
 from backend.database import (
     get_engine, upsert_daily_metrics,
     upsert_anomalies, fetch_anomalies, fetch_daily_metrics
@@ -91,10 +92,21 @@ async def run_analysis(
             if df.empty:
                 raise HTTPException(404, f"No trades found for stress_tag={stress_tag}")
 
-        # Run pipeline
+        # Run pipeline — use pre-trained model for inference, never retrain here
         daily   = compute_daily_ytm(df)
         feat    = compute_features(daily)
-        result  = run_detection_pipeline(feat, contamination=contamination, save=True)
+
+        try:
+            # Use the pre-trained model from disk (trained on full 13L dataset)
+            model, scaler = load_model()
+            X, feat_clean = get_feature_matrix(feat)
+            from engine.detector import apply_persistence_filter, apply_cusum
+            result = predict_anomalies(feat_clean, X, model, scaler)
+            result = apply_persistence_filter(result)
+            result = apply_cusum(result)
+        except FileNotFoundError:
+            # Fallback: no pre-trained model found — train fresh (first-time setup only)
+            result = run_detection_pipeline(feat, contamination=contamination, save=False)
 
         # Persist to DB
         engine = get_engine()
@@ -400,40 +412,29 @@ def get_suggestions(
 
 @app.post("/retrain")
 def retrain_model(contamination: float = Query(default=0.03, ge=0.01, le=0.10)):
-    """Retrain Isolation Forest on features stored in anomalies table in Neon."""
+    """
+    Retrain Isolation Forest on all features currently stored in Neon.
+    Call this after ingesting new data locally via ingest_full_dataset.py.
+    """
     try:
-        import pickle, numpy as np
-        from sklearn.ensemble import IsolationForest
-        from sklearn.preprocessing import RobustScaler
-        from sqlalchemy import text
+        from engine.detector import train_model, save_model, get_feature_matrix
 
         engine_db = get_engine()
-        with engine_db.connect() as conn:
-            result = conn.execute(text("""
-                SELECT d1, z_score_21d, vol_log, spread_bps, spread_d1, prints
-                FROM anomalies
-            """))
-            rows = result.fetchall()
+        metrics   = fetch_daily_metrics(engine=engine_db)
 
-        if not rows:
-            raise HTTPException(404, "No data in anomalies table.")
+        if metrics.empty:
+            raise HTTPException(404, "No daily metrics in DB. Run /run-analysis first.")
 
-        X = np.array([[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows], dtype=float)
-        scaler = RobustScaler()
-        X_scaled = scaler.fit_transform(X)
-
-        clf = IsolationForest(n_estimators=200, contamination=contamination, random_state=42)
-        clf.fit(X_scaled)
-
-        model_path = os.path.join(os.path.dirname(__file__), "..", "engine", "isolation_forest.pkl")
-        with open(model_path, "wb") as f:
-            pickle.dump({"model": clf, "scaler": scaler}, f)
+        X = get_feature_matrix(metrics)
+        model, scaler = train_model(X, contamination=contamination)
+        save_model(model, scaler)
 
         return {
-            "status": "retrained",
-            "rows_used": len(rows),
-            "contamination": contamination,
-            "model_path": "engine/isolation_forest.pkl",
+            "status":          "retrained",
+            "rows_used":       len(X),
+            "isins_covered":   int(metrics["isin"].nunique()),
+            "contamination":   contamination,
+            "model_path":      "engine/isolation_forest.pkl",
         }
     except HTTPException:
         raise
