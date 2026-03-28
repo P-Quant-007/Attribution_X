@@ -417,24 +417,37 @@ def retrain_model(contamination: float = Query(default=0.03, ge=0.01, le=0.10)):
     Call this after ingesting new data locally via ingest_full_dataset.py.
     """
     try:
-        from engine.detector import train_model, save_model, get_feature_matrix
+        import pickle
+        import numpy as np
+        from sklearn.ensemble import IsolationForest
+        from sklearn.preprocessing import RobustScaler
+        from sqlalchemy import text
 
         engine_db = get_engine()
-        metrics   = fetch_daily_metrics(engine=engine_db)
+        with engine_db.connect() as conn:
+            result = conn.execute(text(
+                "SELECT d1, z_score_21d, vol_log, spread_bps, spread_d1, prints FROM anomalies"
+            ))
+            rows = result.fetchall()
 
-        if metrics.empty:
-            raise HTTPException(404, "No daily metrics in DB. Run /run-analysis first.")
+        if not rows:
+            raise HTTPException(404, "No data in anomalies table.")
 
-        X = get_feature_matrix(metrics)
-        model, scaler = train_model(X, contamination=contamination)
-        save_model(model, scaler)
+        X = np.array([[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows], dtype=float)
+        scaler   = RobustScaler()
+        X_scaled = scaler.fit_transform(X)
+        clf = IsolationForest(n_estimators=200, contamination=contamination, random_state=42)
+        clf.fit(X_scaled)
+
+        model_path = os.path.join(os.path.dirname(__file__), "..", "engine", "isolation_forest.pkl")
+        with open(model_path, "wb") as f:
+            pickle.dump({"model": clf, "scaler": scaler}, f)
 
         return {
-            "status":          "retrained",
-            "rows_used":       len(X),
-            "isins_covered":   int(metrics["isin"].nunique()),
-            "contamination":   contamination,
-            "model_path":      "engine/isolation_forest.pkl",
+            "status":        "retrained",
+            "rows_used":     len(rows),
+            "contamination": contamination,
+            "model_path":    "engine/isolation_forest.pkl",
         }
     except HTTPException:
         raise
