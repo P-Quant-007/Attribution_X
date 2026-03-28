@@ -398,6 +398,37 @@ def get_suggestions(
     except Exception as e:
         raise HTTPException(500, f"Suggestion error: {str(e)}\n{traceback.format_exc()}")
 
+@app.post("/retrain")
+def retrain_model(contamination: float = Query(default=0.03, ge=0.01, le=0.10)):
+    """
+    Retrain Isolation Forest on all features currently stored in Neon.
+    Call this after ingesting new data locally via ingest_full_dataset.py.
+    """
+    try:
+        from engine.detector import train_model, save_model, get_feature_matrix
+
+        engine_db = get_engine()
+        metrics   = fetch_daily_metrics(engine=engine_db)
+
+        if metrics.empty:
+            raise HTTPException(404, "No daily metrics in DB. Run /run-analysis first.")
+
+        X = get_feature_matrix(metrics)
+        model, scaler = train_model(X, contamination=contamination)
+        save_model(model, scaler)
+
+        return {
+            "status":          "retrained",
+            "rows_used":       len(X),
+            "isins_covered":   int(metrics["isin"].nunique()),
+            "contamination":   contamination,
+            "model_path":      "engine/isolation_forest.pkl",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Retrain error: {str(e)}\n{traceback.format_exc()}")
+
 @app.get("/explain-anomaly")
 def explain_anomaly_endpoint(
     isin: str = Query(...),
@@ -440,3 +471,44 @@ def explain_anomaly_endpoint(
         raise
     except Exception as e:
         raise HTTPException(500, f"Explanation error: {str(e)}")
+    
+
+def write_anomalies_direct(result_df, engine):
+    """Write anomalies to DB without importing engine.evidence (avoids onnxruntime on Windows)."""
+    from sqlalchemy import text
+    import math
+
+    df = result_df.copy()
+
+    # Compute confidence score inline (same formula as compute_confidence_score)
+    df["prints_norm"] = (df["prints"] / 20).clip(upper=1.0)
+    df["vol_norm"]    = (df["vol_log"] / 20).clip(upper=1.0)
+    df["confidence_score"] = (
+        0.4 * df["prints_norm"] +
+        0.3 * df["vol_norm"] +
+        0.3 * df["confirmed_anomaly"].astype(float)
+    ).round(4)
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df = df.fillna(0).replace([float("inf"), float("-inf")], 0)
+
+    keep = [
+        "date", "isin", "avg_ytm", "spread_bps", "d1", "d5",
+        "z_score_21d", "vol_log", "prints",
+        "anomaly_score", "anomaly_score_norm",
+        "is_anomaly", "confirmed_anomaly", "cusum_signal",
+        "confidence_score",
+    ]
+    df = df[[c for c in keep if c in df.columns]]
+
+    with engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE anomalies"))
+        conn.commit()
+
+    df.to_sql("anomalies", engine, if_exists="append",
+              index=False, method="multi", chunksize=500)
+    print(f"[db] Wrote {len(df)} rows to anomalies")
+
+# Call it directly
+write_anomalies_direct(result, engine)
+print(f"\n[ingest] Complete. {confirmed} confirmed anomalies in Neon.")
