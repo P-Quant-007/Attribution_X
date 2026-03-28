@@ -9,6 +9,21 @@ from qdrant_client.models import (
 from fastembed import TextEmbedding
 #from sentence_transformers import SentenceTransformer
 import numpy as np
+import pandas as pd
+
+def _get_company_name(isin: str) -> str:
+    """Look up company name from first 7 chars of ISIN."""
+    try:
+        map_path = Path(__file__).parent / "isin_company_map.csv"
+        df = pd.read_csv(map_path)
+        prefix = isin[:7].upper()
+        match = df[df["ISIN_7_PREFIX"] == prefix]
+        if not match.empty:
+            return match.iloc[0]["Company"]
+    except Exception:
+        pass
+    return "Unknown Issuer"
+
 
 load_dotenv()
 
@@ -520,17 +535,19 @@ def explain_anomaly(
     # Build query from anomaly features
     isin       = anomaly.get("isin", "")
     date       = str(anomaly.get("date", ""))[:10]
+    company    = _get_company_name(isin)
+    
     avg_ytm    = anomaly.get("avg_ytm", 0)
     spread_bps = anomaly.get("spread_bps", 0)
     d1         = anomaly.get("d1", 0)
     z_score    = anomaly.get("z_score_21d", 0)
 
     query = (
-        f"Bond ISIN {isin} on {date} showed YTM of {avg_ytm:.1f}% "
-        f"with spread of {spread_bps:.0f}bps above benchmark, "
-        f"1-day change of {d1:.0f}bps and z-score of {z_score:.1f}. "
-        f"Indian credit market stress event default NBFC."
-    )
+    f"Issuer: {company} | ISIN {isin} on {date} showed YTM of {avg_ytm:.1f}% "
+    f"with spread of {spread_bps:.0f}bps above benchmark, "
+    f"1-day change of {d1:.0f}bps and z-score of {z_score:.1f}. "
+    f"Indian credit market stress event default NBFC."
+)
 
     # Retrieve evidence from Qdrant
     # Derive tag from ISIN prefix if not explicitly set
