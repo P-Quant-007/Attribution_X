@@ -60,7 +60,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["🔍 Run Analysis", "📈 Results", "💼 Por
 
 # ── TAB 1: Upload & Run ───────────────────────────────────────────────────
 with tab1:
-    # ── Primary action: load pre-trained results from DB ─────────────────
     st.subheader("Credit Market Stress Detection")
     st.caption(
         "Pre-trained on the full CBRICS dataset. "
@@ -107,7 +106,6 @@ with tab1:
             m2.metric("Confirmed", s["confirmed_anomalies"])
             m3.metric("Model", "Pre-trained")
 
-    # ── Advanced: upload a new CBRICS file (uses pre-trained model) ───────
     st.divider()
     with st.expander("Advanced — score a new CBRICS file using the pre-trained model"):
         st.caption(
@@ -154,8 +152,8 @@ with tab2:
     if "results" not in st.session_state:
         st.info("Run an analysis first or load stored results from the Run Analysis tab.")
     else:
-        results  = st.session_state["results"]
-        summary  = results["summary"]
+        results        = st.session_state["results"]
+        summary        = results["summary"]
         anomalies_list = results["anomalies"]
 
         if not anomalies_list:
@@ -169,21 +167,20 @@ with tab2:
 
             # ── Summary metrics ───────────────────────────────────────
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Total Trades",     f"{summary['total_trades']:,}" if isinstance(summary['total_trades'], int) else summary['total_trades'])
-            c2.metric("Daily Rows",       f"{summary['total_daily_rows']:,}" if isinstance(summary['total_daily_rows'], int) else summary['total_daily_rows'])
-            c3.metric("Raw Anomalies",    summary["total_anomalies"])
-            c4.metric("Confirmed",        summary["confirmed_anomalies"])
-            c5.metric("Date Range",       f"{summary['date_range']['from']} → {summary['date_range']['to']}")
+            c1.metric("Total Trades",  f"{summary['total_trades']:,}" if isinstance(summary['total_trades'], int) else summary['total_trades'])
+            c2.metric("Daily Rows",    f"{summary['total_daily_rows']:,}" if isinstance(summary['total_daily_rows'], int) else summary['total_daily_rows'])
+            c3.metric("Raw Anomalies", summary["total_anomalies"])
+            c4.metric("Confirmed",     summary["confirmed_anomalies"])
+            c5.metric("Date Range",    f"{summary['date_range']['from']} → {summary['date_range']['to']}")
 
             st.divider()
 
-            # ── Fetch metrics for charting ─────────────────────────────
+            # ── YTM Chart ─────────────────────────────────────────────
             st.subheader("YTM Time Series with Anomaly Flags")
 
             try:
                 isin_filter = None
                 if stress_tag != "ALL":
-                    # Get most anomalous ISIN for this tag
                     top_isin = (df_anom.sort_values("anomaly_score_norm", ascending=False)
                                        .iloc[0]["isin"])
                     isin_filter = top_isin
@@ -196,94 +193,98 @@ with tab2:
 
                 if metrics_resp.status_code == 200:
                     df_metrics = pd.DataFrame(metrics_resp.json()["metrics"])
-                    df_metrics["date"] = pd.to_datetime(df_metrics["date"])
-
-                    if isin_filter:
-                        df_plot = df_metrics[df_metrics["isin"] == isin_filter]
-                        anom_plot = df_anom[df_anom["isin"] == isin_filter]
-                        chart_title = f"YTM — {isin_filter}"
+                    if df_metrics.empty:
+                        st.info("No metric history available for charting.")
                     else:
-                        # Aggregate across all ISINs
-                        df_plot = (df_metrics.groupby("date")["avg_ytm"]
-                                             .mean()
-                                             .reset_index())
-                        anom_plot = df_anom
-                        chart_title = "Average YTM — All ISINs"
+                        df_metrics["date"] = pd.to_datetime(df_metrics["date"])
 
-                    # Build chart
-                    fig = make_subplots(
-                        rows=2, cols=1,
-                        shared_xaxes=True,
-                        row_heights=[0.7, 0.3],
-                        vertical_spacing=0.05,
-                    )
+                        if isin_filter:
+                            df_plot    = df_metrics[df_metrics["isin"] == isin_filter]
+                            anom_plot  = df_anom[df_anom["isin"] == isin_filter]
+                            chart_title = f"YTM — {isin_filter}"
+                        else:
+                            df_plot = (df_metrics.groupby("date")["avg_ytm"]
+                                                 .mean()
+                                                 .reset_index())
+                            anom_plot  = df_anom
+                            chart_title = "Average YTM — All ISINs"
 
-                    # YTM line
-                    fig.add_trace(go.Scatter(
-                        x=df_plot["date"],
-                        y=df_plot["avg_ytm"],
-                        mode="lines",
-                        name="Avg YTM (%)",
-                        line=dict(color="#4C9BE8", width=1.5),
-                    ), row=1, col=1)
+                        # Build chart — always runs when df_metrics is not empty
+                        fig = make_subplots(
+                            rows=2, cols=1,
+                            shared_xaxes=True,
+                            row_heights=[0.7, 0.3],
+                            vertical_spacing=0.05,
+                        )
 
-                    # Anomaly markers
-                    if len(anom_plot):
-                        confirmed = anom_plot[anom_plot.get("confirmed_anomaly", pd.Series([0]*len(anom_plot))) == 1]
-                        unconfirmed = anom_plot[anom_plot.get("confirmed_anomaly", pd.Series([0]*len(anom_plot))) != 1]
-
-                        if len(confirmed):
-                            fig.add_trace(go.Scatter(
-                                x=confirmed["date"],
-                                y=confirmed["avg_ytm"],
-                                mode="markers",
-                                name="Confirmed anomaly",
-                                marker=dict(color="red", size=10,
-                                            symbol="circle",
-                                            line=dict(color="darkred", width=1)),
-                                hovertemplate=(
-                                    "<b>%{x}</b><br>"
-                                    "YTM: %{y:.2f}%<br>"
-                                    "Score: %{customdata:.3f}<extra></extra>"
-                                ),
-                                customdata=confirmed["anomaly_score_norm"],
-                            ), row=1, col=1)
-
-                        if len(unconfirmed):
-                            fig.add_trace(go.Scatter(
-                                x=unconfirmed["date"],
-                                y=unconfirmed["avg_ytm"],
-                                mode="markers",
-                                name="Raw anomaly",
-                                marker=dict(color="orange", size=7,
-                                            symbol="circle-open",
-                                            line=dict(color="orange", width=1.5)),
-                            ), row=1, col=1)
-
-                    # Spread chart
-                    if "spread_bps" in df_plot.columns:
-                        fig.add_trace(go.Bar(
+                        fig.add_trace(go.Scatter(
                             x=df_plot["date"],
-                            y=df_plot["spread_bps"],
-                            name="Spread (bps)",
-                            marker_color="#7FC97F",
-                            opacity=0.6,
-                        ), row=2, col=1)
+                            y=df_plot["avg_ytm"],
+                            mode="lines",
+                            name="Avg YTM (%)",
+                            line=dict(color="#4C9BE8", width=1.5),
+                        ), row=1, col=1)
 
-                    fig.update_layout(
-                        title=chart_title,
-                        height=550,
-                        hovermode="x unified",
-                        legend=dict(orientation="h", y=1.05),
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                    )
-                    fig.update_yaxes(title_text="YTM (%)", row=1, col=1)
-                    fig.update_yaxes(title_text="Spread (bps)", row=2, col=1)
-                    fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
-                    fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
+                        if len(anom_plot):
+                            confirmed_anom = anom_plot[
+                                anom_plot.get("confirmed_anomaly",
+                                             pd.Series([0] * len(anom_plot))) == 1
+                            ]
+                            unconfirmed_anom = anom_plot[
+                                anom_plot.get("confirmed_anomaly",
+                                             pd.Series([0] * len(anom_plot))) != 1
+                            ]
 
-                    st.plotly_chart(fig, use_container_width=True)
+                            if len(confirmed_anom):
+                                fig.add_trace(go.Scatter(
+                                    x=confirmed_anom["date"],
+                                    y=confirmed_anom["avg_ytm"],
+                                    mode="markers",
+                                    name="Confirmed anomaly",
+                                    marker=dict(color="red", size=10,
+                                                symbol="circle",
+                                                line=dict(color="darkred", width=1)),
+                                    hovertemplate=(
+                                        "<b>%{x}</b><br>"
+                                        "YTM: %{y:.2f}%<br>"
+                                        "Score: %{customdata:.3f}<extra></extra>"
+                                    ),
+                                    customdata=confirmed_anom["anomaly_score_norm"],
+                                ), row=1, col=1)
+
+                            if len(unconfirmed_anom):
+                                fig.add_trace(go.Scatter(
+                                    x=unconfirmed_anom["date"],
+                                    y=unconfirmed_anom["avg_ytm"],
+                                    mode="markers",
+                                    name="Raw anomaly",
+                                    marker=dict(color="orange", size=7,
+                                                symbol="circle-open",
+                                                line=dict(color="orange", width=1.5)),
+                                ), row=1, col=1)
+
+                        if "spread_bps" in df_plot.columns:
+                            fig.add_trace(go.Bar(
+                                x=df_plot["date"],
+                                y=df_plot["spread_bps"],
+                                name="Spread (bps)",
+                                marker_color="#7FC97F",
+                                opacity=0.6,
+                            ), row=2, col=1)
+
+                        fig.update_layout(
+                            title=chart_title,
+                            height=550,
+                            hovermode="x unified",
+                            legend=dict(orientation="h", y=1.05),
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                        )
+                        fig.update_yaxes(title_text="YTM (%)", row=1, col=1)
+                        fig.update_yaxes(title_text="Spread (bps)", row=2, col=1)
+                        fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
+                        fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
+                        st.plotly_chart(fig, use_container_width=True)
 
             except Exception as e:
                 st.warning(f"Chart unavailable: {e}")
@@ -311,7 +312,6 @@ with tab2:
                 height=400,
             )
 
-            # ── Download ───────────────────────────────────────────────
             csv = df_anom[display_cols].to_csv(index=False)
             st.download_button(
                 "⬇ Download anomalies CSV",
@@ -367,16 +367,13 @@ with tab2:
                 if "last_explanation" in st.session_state:
                     expl = st.session_state["last_explanation"]
 
-                    # Confidence score
                     conf = expl.get("confidence_score", 0)
                     conf_color = "🟢" if conf > 0.6 else "🟡" if conf > 0.3 else "🔴"
                     st.metric("Confidence Score", f"{conf_color} {conf:.2%}")
 
-                    # Explanation text
                     st.markdown("**Explanation**")
                     st.info(expl.get("explanation", "No explanation available."))
 
-                    # Evidence
                     st.markdown("**Supporting Evidence**")
                     for ev in expl.get("evidence", []):
                         with st.expander(
@@ -389,12 +386,10 @@ with tab2:
 with tab3:
     st.subheader("Portfolio PnL Attribution")
 
-    # Hidden settings — always use demo defaults
     portfolio_id = "demo_portfolio"
     start_date   = "2018-01-01"
     end_date     = "2019-12-31"
 
-    # ── Primary action: load demo portfolio from DB ───────────────────────
     if "portfolio_summary" not in st.session_state:
         st.caption(
             "Demo portfolio: 8 bonds including DHFL, IL&FS, Yes Bank, NABARD, HDFC. "
@@ -404,7 +399,6 @@ with tab3:
             st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
             st.rerun()
 
-    # ── Advanced: upload your own portfolio ───────────────────────────────
     with st.expander("Advanced — upload your own portfolio"):
         col_up, col_set = st.columns([2, 1])
         with col_up:
@@ -446,16 +440,15 @@ with tab3:
     if "portfolio_summary" in st.session_state:
         psummary = st.session_state["portfolio_summary"]
 
-        # ── Holdings table ─────────────────────────────────────────────
         if "holdings" in psummary:
             st.divider()
             st.subheader("Holdings")
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total AUM", f"₹{psummary.get('total_aum_lacs', 0):,.0f}L")
-            c2.metric("Holdings",  psummary.get("total_holdings", 0))
+            c1.metric("Total AUM",       f"₹{psummary.get('total_aum_lacs', 0):,.0f}L")
+            c2.metric("Holdings",         psummary.get("total_holdings", 0))
             c3.metric("Stress exposure", f"{psummary.get('stress_aum_pct', 0):.1f}%")
-            c4.metric("Portfolio DV01", f"₹{psummary.get('portfolio_dv01', 0):.2f}L/bp")
+            c4.metric("Portfolio DV01",  f"₹{psummary.get('portfolio_dv01', 0):.2f}L/bp")
 
             holdings_df = pd.DataFrame(psummary["holdings"])
             holdings_df["stress"] = holdings_df["is_stress_issuer"].apply(
@@ -474,7 +467,6 @@ with tab3:
                 height=300,
             )
 
-        # ── PnL Attribution ────────────────────────────────────────────
         st.divider()
         st.subheader("PnL Attribution")
 
@@ -500,17 +492,15 @@ with tab3:
                     st.error(f"Error: {e}")
 
         if "pnl_report" in st.session_state:
-            report = st.session_state["pnl_report"]
+            report  = st.session_state["pnl_report"]
             summary = report.get("summary", {})
 
-            # Summary metrics
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total PnL",      f"₹{summary.get('total_pnl_lacs', 0):,.2f}L")
             m2.metric("Benchmark PnL",  f"₹{summary.get('benchmark_pnl_lacs', 0):,.2f}L")
             m3.metric("Spread PnL",     f"₹{summary.get('spread_pnl_lacs', 0):,.2f}L")
             m4.metric("Spread % total", f"{summary.get('spread_pct_of_total', 0):.1f}%")
 
-            # Cumulative PnL chart
             daily = pd.DataFrame(report.get("daily_portfolio", []))
             if not daily.empty:
                 daily["date"] = pd.to_datetime(daily["date"])
@@ -535,7 +525,6 @@ with tab3:
                 fig_cum.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.1)")
                 st.plotly_chart(fig_cum, use_container_width=True)
 
-            # By bond waterfall
             by_bond = pd.DataFrame(report.get("by_bond", []))
             if not by_bond.empty:
                 fig_wf = go.Figure(go.Bar(
@@ -556,7 +545,6 @@ with tab3:
                 )
                 st.plotly_chart(fig_wf, use_container_width=True)
 
-        # ── AI Suggestions ─────────────────────────────────────────────
         st.divider()
         st.subheader("🤖 AI Reallocation Suggestions")
 
@@ -581,19 +569,17 @@ with tab3:
 
         if "suggestions" in st.session_state:
             suggestions = st.session_state["suggestions"]
-            action_colors = {
-                "REDUCE": "#E24B4A", "ADD": "#639922", "SWITCH": "#BA7517"
-            }
+            action_colors  = {"REDUCE": "#E24B4A", "ADD": "#639922", "SWITCH": "#BA7517"}
             priority_icons = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
 
             st.caption("⚠️ AI-generated advisory. Not financial advice. Verify independently.")
             st.divider()
 
             for i, s in enumerate(suggestions, 1):
-                action  = s.get("action", "")
-                color   = action_colors.get(action, "#888")
+                action   = s.get("action", "")
+                color    = action_colors.get(action, "#888")
                 priority = s.get("priority", "MEDIUM")
-                icon    = priority_icons.get(priority, "🟡")
+                icon     = priority_icons.get(priority, "🟡")
 
                 st.markdown(
                     f"""<div style="border-left: 4px solid {color}; padding: 12px 16px;
@@ -608,6 +594,7 @@ with tab3:
                 st.caption(f"⚡ Risk: {s.get('risk_note', '')}")
                 if i < len(suggestions):
                     st.divider()
+
 
 # ── TAB 4: About ──────────────────────────────────────────────────────────
 with tab4:
