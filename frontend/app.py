@@ -398,20 +398,35 @@ with tab3:
         if st.button("📂 Load Demo Portfolio", type="primary", use_container_width=True):
             with st.spinner("Loading demo portfolio..."):
                 try:
-                    resp = requests.get(
+                    # Fetch holdings
+                    port_resp = requests.get(
+                        f"{api_url}/get-portfolio",
+                        params={"portfolio_id": portfolio_id},
+                        timeout=30,
+                    )
+                    # Fetch PnL
+                    pnl_resp = requests.get(
                         f"{api_url}/get-pnl-attribution",
                         params={"portfolio_id": portfolio_id,
                                 "start_date": start_date,
                                 "end_date": end_date},
                         timeout=120,
                     )
-                    if resp.status_code == 200:
-                        st.session_state["pnl_report"] = resp.json()["report"]
-                        st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
+                    if port_resp.status_code == 200 and pnl_resp.status_code == 200:
+                        port_data = port_resp.json()
+                        st.session_state["portfolio_summary"] = {
+                            "portfolio_id": portfolio_id,
+                            "holdings": port_data["holdings"],
+                            "total_holdings": port_data["total_holdings"],
+                            "total_aum_lacs": port_data["total_aum_lacs"],
+                            "stress_aum_pct": 0,
+                            "portfolio_dv01": 0,
+                        }
+                        st.session_state["pnl_report"] = pnl_resp.json()["report"]
                         st.success("Demo portfolio loaded!")
                         st.rerun()
                     else:
-                        st.error(f"Failed: {resp.text[:200]}")
+                        st.error(f"Failed to load portfolio: {port_resp.text[:200]}")
                 except Exception as e:
                     st.error(f"Error: {e}")
 

@@ -286,6 +286,30 @@ async def upload_portfolio(
             pass
 
 
+@app.get("/get-portfolio")
+def get_portfolio(portfolio_id: str = Query(default="demo_portfolio")):
+    """Fetch stored portfolio holdings from DB."""
+    try:
+        from backend.database import fetch_portfolio
+        engine_db = get_engine()
+        df = fetch_portfolio(portfolio_id, engine=engine_db)
+        if df.empty:
+            raise HTTPException(404, f"Portfolio '{portfolio_id}' not found.")
+        df = df.fillna(0)
+        holdings = df.to_dict(orient="records")
+        return {
+            "status": "success",
+            "portfolio_id": portfolio_id,
+            "holdings": holdings,
+            "total_holdings": len(holdings),
+            "total_aum_lacs": float(df["face_value"].sum()) if "face_value" in df.columns else 0,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio fetch error: {str(e)}")
+
+
 @app.get("/get-pnl-attribution")
 def get_pnl_attribution(
     portfolio_id: str = Query(default="default_portfolio"),
