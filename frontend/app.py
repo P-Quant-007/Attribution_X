@@ -398,11 +398,6 @@ with tab3:
         if st.button("📂 Load Demo Portfolio", type="primary", use_container_width=True):
             with st.spinner("Loading demo portfolio..."):
                 try:
-                    # Upload the demo portfolio CSV to get holdings summary
-                    demo_path = os.path.join(
-                        os.path.dirname(__file__), "..", "data", "sample_portfolio.csv"
-                    )
-                    # Try fetching PnL directly — portfolio already in DB
                     resp = requests.get(
                         f"{api_url}/get-pnl-attribution",
                         params={"portfolio_id": portfolio_id,
