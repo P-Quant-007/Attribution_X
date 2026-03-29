@@ -288,26 +288,50 @@ async def upload_portfolio(
 
 @app.get("/get-portfolio")
 def get_portfolio(portfolio_id: str = Query(default="demo_portfolio")):
-    """Fetch stored portfolio holdings from DB."""
+    """Fetch stored portfolio holdings from DB with computed DV01 and stress metrics."""
     try:
         from backend.database import fetch_portfolio
-        engine_db = get_engine()
-        df = fetch_portfolio(portfolio_id, engine=engine_db)
+        from engine.portfolio import portfolio_summary
+        from engine.pnl import enrich_portfolio_with_duration
+
+        engine_db    = get_engine()
+        df           = fetch_portfolio(portfolio_id, engine=engine_db)
         if df.empty:
             raise HTTPException(404, f"Portfolio '{portfolio_id}' not found.")
-        df = df.fillna(0)
-        holdings = df.to_dict(orient="records")
-        return {
-            "status": "success",
-            "portfolio_id": portfolio_id,
-            "holdings": holdings,
-            "total_holdings": len(holdings),
-            "total_aum_lacs": float(df["face_value"].sum()) if "face_value" in df.columns else 0,
-        }
+
+        df["maturity_date"] = pd.to_datetime(df["maturity_date"])
+        metrics_df = fetch_daily_metrics(engine=engine_db)
+
+        if not metrics_df.empty:
+            metrics_df["date"] = pd.to_datetime(metrics_df["date"])
+            enriched = enrich_portfolio_with_duration(df, metrics_df)
+        else:
+            enriched = df.copy()
+            enriched["modified_duration"]      = 0.0
+            enriched["dv01"]                   = 0.0
+            enriched["dv01_contribution_pct"]  = 0.0
+
+        summary = portfolio_summary(enriched)
+        summary["portfolio_id"]   = portfolio_id
+        summary["portfolio_dv01"] = round(float(enriched["dv01"].sum()), 4) if "dv01" in enriched.columns else 0.0
+
+        import math
+        def clean(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return 0.0
+            return v
+
+        summary["holdings"] = [
+            {k: clean(val) if isinstance(val, float) else val for k, val in h.items()}
+            for h in summary["holdings"]
+        ]
+
+        return {"status": "success", **summary}
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Portfolio fetch error: {str(e)}")
+        raise HTTPException(500, f"Portfolio fetch error: {str(e)}\n{traceback.format_exc()}")
 
 
 @app.get("/get-pnl-attribution")
