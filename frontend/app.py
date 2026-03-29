@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-#API_URL = "http://localhost:8000"  # replaced with Render URL on deployment
+# Render URL on deployment
 API_URL = "https://attribution-x.onrender.com"
 
 # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -396,8 +396,29 @@ with tab3:
             "Period: 2018–2019 DHFL stress cycle."
         )
         if st.button("📂 Load Demo Portfolio", type="primary", use_container_width=True):
-            st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
-            st.rerun()
+            with st.spinner("Loading demo portfolio..."):
+                try:
+                    # Upload the demo portfolio CSV to get holdings summary
+                    demo_path = os.path.join(
+                        os.path.dirname(__file__), "..", "data", "sample_portfolio.csv"
+                    )
+                    # Try fetching PnL directly — portfolio already in DB
+                    resp = requests.get(
+                        f"{api_url}/get-pnl-attribution",
+                        params={"portfolio_id": portfolio_id,
+                                "start_date": start_date,
+                                "end_date": end_date},
+                        timeout=120,
+                    )
+                    if resp.status_code == 200:
+                        st.session_state["pnl_report"] = resp.json()["report"]
+                        st.session_state["portfolio_summary"] = {"portfolio_id": portfolio_id}
+                        st.success("Demo portfolio loaded!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed: {resp.text[:200]}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     with st.expander("Advanced — upload your own portfolio"):
         col_up, col_set = st.columns([2, 1])
