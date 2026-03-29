@@ -416,12 +416,13 @@ with tab3:
                         port_data = port_resp.json()
                         st.session_state["portfolio_summary"] = {
                             "portfolio_id": portfolio_id,
-                            "holdings": port_data["holdings"],
-                            "total_holdings": port_data["total_holdings"],
-                            "total_aum_lacs": port_data["total_aum_lacs"],
-                            "stress_aum_pct": 0,
-                            "portfolio_dv01": 0,
+                            "holdings": port_data.get("holdings", []),
+                            "total_holdings": port_data.get("total_holdings", 0),
+                            "total_aum_lacs": port_data.get("total_aum_lacs", 0),
+                            "stress_aum_pct": port_data.get("stress_aum_pct", 0),
+                            "portfolio_dv01": port_data.get("portfolio_dv01", 0),
                         }
+                        
                         st.session_state["pnl_report"] = pnl_resp.json()["report"]
                         st.success("Demo portfolio loaded!")
                         st.rerun()
