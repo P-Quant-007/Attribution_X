@@ -141,12 +141,12 @@ def generate_suggestions(
             suggestions = json.loads(raw)
             if isinstance(suggestions, list) and len(suggestions) == 3:
                 print(f"[suggestions] Generated {len(suggestions)} AI suggestions")
-                return suggestions
+                return {"suggestions": suggestions, "ai_generated": True}
         except Exception as e:
             print(f"[suggestions] LLM call failed: {e}, using fallback.")
 
     # Deterministic fallback — no API needed
-    return _fallback_suggestions(attribution_report, portfolio_df)
+    return {"suggestions": _fallback_suggestions(attribution_report, portfolio_df), "ai_generated": False}
 
 
 def _fallback_suggestions(attribution_report: dict, portfolio_df) -> list[dict]:

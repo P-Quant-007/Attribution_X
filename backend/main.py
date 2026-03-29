@@ -447,10 +447,12 @@ def get_suggestions(
         ant_key    = os.getenv("ANTHROPIC_API_KEY", "")
         suggestions = generate_suggestions(report, anomalies, portfolio_df, ant_key)
 
+        result = suggestions  # now a dict with suggestions + ai_generated
         return {
-            "status":      "success",
-            "portfolio_id": portfolio_id,
-            "suggestions": suggestions,
+            "status":        "success",
+            "portfolio_id":  portfolio_id,
+            "suggestions":   result["suggestions"],
+            "ai_generated":  result["ai_generated"],
         }
 
     except HTTPException:

@@ -575,7 +575,7 @@ def explain_anomaly(
     confidence = compute_confidence_score(anomaly)
 
     # LLM explanation
-    explanation = _generate_llm_explanation(
+    explanation, ai_generated = _generate_llm_explanation(
         anomaly, evidence, anthropic_client, company=company
     )
 
@@ -587,6 +587,7 @@ def explain_anomaly(
         "confidence_score": confidence,
         "evidence":         evidence,
         "explanation":      explanation,
+        "ai_generated":     ai_generated,
     }
 
 
@@ -643,7 +644,7 @@ Do not use bullet points. Be direct and factual."""
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}]
             )
-            return message.content[0].text.strip()
+            return (message.content[0].text.strip(), True)
         except Exception as e:
             print(f"[evidence] LLM call failed: {e}, using template.")
 
@@ -654,7 +655,7 @@ Do not use bullet points. Be direct and factual."""
 
     top_event = evidence[0]["title"] if evidence else "an Indian credit market stress event"
 
-    return (
+    return ( #fallback
         f"Issuer: {company}. This anomaly represents {severity} credit stress with YTM of {avg_ytm:.1f}% "
         f"and a spread of {spread_bps:.0f} bps above the GOI benchmark, {confirmed_text}. "
         f"The most likely market context is: {top_event}.{cusum_text}"

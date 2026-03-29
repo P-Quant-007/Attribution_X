@@ -359,6 +359,7 @@ with tab2:
                             if resp.status_code == 200:
                                 expl = resp.json()["explanation"]
                                 st.session_state["last_explanation"] = expl
+                                st.session_state["explanation_ai"] = expl.get("ai_generated", False)
                             else:
                                 st.error(f"API error: {resp.text[:200]}")
                         except Exception as e:
@@ -371,6 +372,8 @@ with tab2:
                     conf_color = "🟢" if conf > 0.6 else "🟡" if conf > 0.3 else "🔴"
                     st.metric("Confidence Score", f"{conf_color} {conf:.2%}")
 
+                    ai_flag = "🤖 Claude AI" if st.session_state.get("explanation_ai") else "📋 Rule-based"
+                    st.caption(ai_flag)
                     st.markdown("**Explanation**")
                     st.info(expl.get("explanation", "No explanation available."))
 
@@ -592,6 +595,7 @@ with tab3:
                     )
                     if resp.status_code == 200:
                         st.session_state["suggestions"] = resp.json()["suggestions"]
+                        st.session_state["suggestions_ai"] = resp.json().get("ai_generated", False)
                         st.success("Suggestions generated!")
                         st.rerun()
                     else:
@@ -604,7 +608,8 @@ with tab3:
             action_colors  = {"REDUCE": "#E24B4A", "ADD": "#639922", "SWITCH": "#BA7517"}
             priority_icons = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
 
-            st.caption("⚠️ AI-generated advisory. Not financial advice. Verify independently.")
+            ai_flag = "🤖 Claude AI Generated" if st.session_state.get("suggestions_ai") else "📋 Rule-based (no API key)"
+            st.caption(f"{ai_flag} &nbsp;|&nbsp; ⚠️ Not financial advice. Verify independently.")
             st.divider()
 
             for i, s in enumerate(suggestions, 1):
