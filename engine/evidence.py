@@ -576,7 +576,7 @@ def explain_anomaly(
 
     # LLM explanation
     explanation = _generate_llm_explanation(
-        anomaly, evidence, anthropic_client
+        anomaly, evidence, anthropic_client, company=company
     )
 
     return {
@@ -594,6 +594,7 @@ def _generate_llm_explanation(
     anomaly: dict,
     evidence: list,
     anthropic_client=None,
+    company: str = "Unknown Issuer",
 ) -> str:
     """
     Generate a concise explanation using Claude.
@@ -618,6 +619,8 @@ def _generate_llm_explanation(
             prompt = f"""You are an expert Indian fixed income analyst.
 
 An anomaly was detected in bond trading data:
+- Issuer: {company}
+- ISIN: {anomaly.get("isin", "")}
 - Date: {date}
 - YTM: {avg_ytm:.2f}%
 - Spread to benchmark: {spread_bps:.0f} bps
