@@ -655,7 +655,7 @@ Do not use bullet points. Be direct and factual."""
     top_event = evidence[0]["title"] if evidence else "an Indian credit market stress event"
 
     return (
-        f"This anomaly represents {severity} credit stress with YTM of {avg_ytm:.1f}% "
+        f"Issuer: {company}. This anomaly represents {severity} credit stress with YTM of {avg_ytm:.1f}% "
         f"and a spread of {spread_bps:.0f} bps above the GOI benchmark, {confirmed_text}. "
         f"The most likely market context is: {top_event}.{cusum_text}"
     )
